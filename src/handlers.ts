@@ -1,74 +1,123 @@
+import { rejects } from "assert";
 import { FastifyRequest, FastifyReply } from "fastify";
 import { PokemonWithStats } from "models/PokemonWithStats";
 
 export async function getPokemonByName(request: FastifyRequest, reply: FastifyReply) {
-  var name: string = request.params['name']
+  let name: string = request.params['name'];
 
-  reply.headers['Accept'] = 'application/json'
+  reply.headers['Accept'] = 'application/json';
 
-  var urlApiPokeman = `https://pokeapi.co/api/v2/pokemon/`;
+  let hostName = 'pokeapi.co';
+  let urlApiPokeman = '/api/v2/pokemon';
 
-  var params = {}
+  let params = {};
 
   name == null
-      ? name.trim() != ''
+    ? name.trim() != ''
       ? (params["name"] = name, urlApiPokeman = urlApiPokeman + '/', urlApiPokeman = urlApiPokeman + name)
-      : (urlApiPokeman = urlApiPokeman + '"?offset=20"', urlApiPokeman = urlApiPokeman + "&limit=20")
-      : (urlApiPokeman = urlApiPokeman + '"?offset=20"', urlApiPokeman = urlApiPokeman + "&limit=20")
+      : (urlApiPokeman = urlApiPokeman + "?offset=20", urlApiPokeman = urlApiPokeman + "&limit=20")
+    : (urlApiPokeman = urlApiPokeman + '/', urlApiPokeman = urlApiPokeman + name, urlApiPokeman = urlApiPokeman + "?offset=20", urlApiPokeman = urlApiPokeman + "&limit=20")
 
-  const http = require('http');
-  const keepAliveAgent = new http.Agent({ keepAlive: true });
+  const https = require('https');
+  const keepAliveAgent = new https.Agent({ keepAlive: true });
 
-  let response: any = ""
+  const result: any = await new Promise((resolve, reject) => {
 
-  http.request({ ...reply.headers, ...({ hostname: urlApiPokeman, port: 80, }) }, (result) => { response = result })
+    const requestCallback = (result) => {
+      let response: any = "";
 
-  if (response == null) {
-    reply.code(404)
-  }
+      result.on('data', (chunk) => {
+        response += chunk;
+      });
 
-  computeResponse(response, reply)
+      result.on('close', () => {
+        resolve(response);
+      });
+    };
 
-  reply.send(response)
+    const options = { ...reply.headers, host: hostName, port: 443, path: urlApiPokeman, agent: keepAliveAgent };
+    const request = https.request(options, requestCallback);
 
-  return reply
-}
-
-export const computeResponse = async (response: unknown, reply: FastifyReply) => {
-  const resp = response as any
-
-  let types = resp.types.map(type => type.type).map(type => { return type.url }).reduce((types, typeUrl) => types.push(typeUrl));
-
-  let pokemonTypes = []
-
-  types.forEach(element => {
-    const http = require('http');
-    const keepAliveAgent = new http.Agent({ keepAlive: true });
-
-    http.request({ hostname: element }, (response) => pokemonTypes.push(response))
+    request.on("error", (err) => {
+      console.log("Error: ", err);
+      reject(err);
+    }).end();
 
   });
 
-  if (pokemonTypes == undefined)
-    throw pokemonTypes
+  if (result == null) {
+    reply.code(404);
+  }
 
-  response.stats.forEach(element => {
-    var stats = []
+  if (name) {
+    await computeResponse(result, reply);
+  }
 
-    pokemonTypes.map(pok =>
-        pok.stats.map(st =>
-            st.stat.name.toUpperCase() == element.stat.name
-                ? stats.push(st.base_state)
-                : ([])
+  reply.send(result);
+
+  return reply;
+}
+
+const computeResponse = async (response: any, reply: FastifyReply) => {
+  const resp = JSON.parse(response) as any;
+
+  let types = resp.types.map(type => type.type.url);
+
+  let pokemonTypes = [];
+  let promises = [];
+
+  types.forEach(async (element) => {
+    const https = require('https');
+    let options = new URL(element);
+
+    promises.push(
+      new Promise((resolve, reject) => {
+
+        let request = https.request(options, (response) => {
+          response.setEncoding('binary');
+
+          response.on('data', (chunk) => {
+            pokemonTypes.push(chunk);
+          });
+
+          response.on('close', () => {
+            resolve(pokemonTypes);
+          });
+        })
+
+        request.on("error", (err) => {
+          console.log("Error: ", err);
+          reject(err);
+        }).end();
+
+      }));
+  });
+
+  await Promise.all(promises).then(() => {
+
+    if (pokemonTypes == undefined)
+      throw pokemonTypes;
+
+    resp.stats.forEach(element => {
+      var stats = [];
+
+      pokemonTypes.map(pok =>
+        pok.pokemon?.forEach(st =>
+          st.pokemon.name.toUpperCase() == element.stat.name
+            ? stats.push(element.base_stat)
+            : ([])
         )
-    )
+      );
 
-    if (stats) {
-      let avg = stats.reduce((a, b) => a + b) / stats.length
-      element.averageStat = avg
-    } else {
-      element.averageStat = 0
-    }
+      if (stats.length != 0) {
+        let avg = stats.reduce((a, b) => a + b) / stats.length;
+        element.averageStat = avg;
+      } else {
+        element.averageStat = 0;
+      }
+
+    });
+
   });
 
 }
